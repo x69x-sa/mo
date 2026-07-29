@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "617587554492",
+    "project_id": "restaurant-delivery-c7c86",
+    "storage_bucket": "restaurant-delivery-c7c86.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:617587554492:android:0c76159304b6b3fa8df8b9",
+        "android_client_info": {
+          "package_name": "com.restaurant.delivery"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAxVSDp0_ffOY63-mAnMlD4TqFuLLOf53g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.RestaurantDelivery" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#111827</item>
+        <item name="colorPrimary">#111827</item>
+        <item name="colorPrimaryVariant">#111827</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+    </style>
+</resources>
