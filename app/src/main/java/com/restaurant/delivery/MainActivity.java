@@ -1,10 +1,13 @@
 package com.restaurant.delivery;
 
 import android.Manifest;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -19,11 +22,14 @@ import android.widget.Toast;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationServices;
 import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.firestore.DocumentChange;
 import com.google.firebase.firestore.DocumentSnapshot;
 import com.google.firebase.firestore.FieldValue;
 import com.google.firebase.firestore.FirebaseFirestore;
@@ -34,8 +40,10 @@ import com.google.firebase.firestore.SetOptions;
 import java.text.NumberFormat;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
     private FirebaseAuth auth;
@@ -43,6 +51,9 @@ public class MainActivity extends AppCompatActivity {
     private FusedLocationProviderClient locationClient;
     private ListenerRegistration ordersListener;
     private LinearLayout root;
+    private static final String ORDER_CHANNEL_ID = "new_orders";
+    private final Set<String> seenDriverOrders = new HashSet<>();
+    private boolean driverSnapshotInitialized = false;
 
     private EditText phoneInput;
     private EditText nameInput;
@@ -68,6 +79,8 @@ public class MainActivity extends AppCompatActivity {
         auth = FirebaseAuth.getInstance();
         db = FirebaseFirestore.getInstance();
         locationClient = LocationServices.getFusedLocationProviderClient(this);
+        createNotificationChannel();
+        requestNotificationPermissionIfNeeded();
         showLoginOrRoute();
     }
 
@@ -199,6 +212,9 @@ public class MainActivity extends AppCompatActivity {
         bottom.addView(call, weighted());
         root.addView(bottom);
 
+        Button completedOrders = makeSecondaryButton("سجل الطلبات المسلّمة");
+        addFullButton(completedOrders);
+
         search.setOnClickListener(v -> searchCustomer());
         clear.setOnClickListener(v -> clearForm());
         location.setOnClickListener(v -> requestLocation());
@@ -206,6 +222,7 @@ public class MainActivity extends AppCompatActivity {
         save.setOnClickListener(v -> saveCustomer());
         createOrder.setOnClickListener(v -> createOrder());
         activeOrders.setOnClickListener(v -> showAdminOrders());
+        completedOrders.setOnClickListener(v -> showCompletedOrders());
         call.setOnClickListener(v -> callCustomer());
     }
 
@@ -239,7 +256,55 @@ public class MainActivity extends AppCompatActivity {
                 });
     }
 
+    private void showCompletedOrders() {
+        baseScreen("سجل الطلبات المسلّمة");
+        Button back = makeSecondaryButton("العودة للوحة المطعم");
+        addFullButton(back);
+        back.setOnClickListener(v -> showAdminScreen());
+
+        TextView loading = addText("جاري تحميل السجل...", 15, Gravity.CENTER);
+        ordersListener = db.collection("orders")
+                .whereEqualTo("status", "DELIVERED")
+                .addSnapshotListener((snapshots, error) -> {
+                    if (error != null) {
+                        loading.setText("تعذر تحميل السجل: " + error.getLocalizedMessage());
+                        return;
+                    }
+                    if (snapshots != null) {
+                        if (driverSnapshotInitialized) {
+                            for (DocumentChange change : snapshots.getDocumentChanges()) {
+                                if (change.getType() == DocumentChange.Type.ADDED
+                                        && "NEW".equals(change.getDocument().getString("status"))
+                                        && !seenDriverOrders.contains(change.getDocument().getId())) {
+                                    notifyNewOrder(change.getDocument());
+                                }
+                            }
+                        }
+                        for (DocumentSnapshot item : snapshots.getDocuments()) {
+                            seenDriverOrders.add(item.getId());
+                        }
+                        driverSnapshotInitialized = true;
+                    }
+                    loading.setVisibility(View.GONE);
+                    removeTaggedViews("order_card");
+                    if (snapshots == null || snapshots.isEmpty()) {
+                        TextView empty = orderMessage("لا توجد طلبات مسلّمة بعد");
+                        empty.setTag("order_card");
+                        root.addView(empty);
+                        return;
+                    }
+                    for (QueryDocumentSnapshot doc : snapshots) {
+                        LinearLayout card = buildOrderCard(doc, false);
+                        card.setTag("order_card");
+                        root.addView(card);
+                    }
+                });
+    }
+
     private void showDriverScreen() {
+        driverSnapshotInitialized = false;
+        seenDriverOrders.clear();
+        setDriverAvailability(true);
         baseScreen("طلبات السائق");
         addText("الطلبات الجديدة تظهر هنا لحظيًا", 14, Gravity.CENTER);
 
@@ -327,7 +392,7 @@ public class MainActivity extends AppCompatActivity {
             Button delivered = makeSuccessButton("تم التسليم");
             card.addView(delivered, fullButtonParams());
             delivered.setOnClickListener(v -> updateOrderStatus(doc.getId(), "DELIVERED"));
-        } else {
+        } else if (!"DELIVERED".equals(status) && !"CANCELLED".equals(status)) {
             Button cancel = makeDangerButton("إلغاء الطلب");
             card.addView(cancel, fullButtonParams());
             cancel.setOnClickListener(v -> updateOrderStatus(doc.getId(), "CANCELLED"));
@@ -379,7 +444,11 @@ public class MainActivity extends AppCompatActivity {
         update.put("updatedAt", FieldValue.serverTimestamp());
         if ("DELIVERED".equals(status)) update.put("deliveredAt", FieldValue.serverTimestamp());
         db.collection("orders").document(orderId).update(update)
-                .addOnSuccessListener(v -> toast("تم تحديث حالة الطلب"))
+                .addOnSuccessListener(v -> {
+                    if ("ACCEPTED".equals(status) || "ON_ROUTE".equals(status)) setDriverAvailability(false);
+                    if ("DELIVERED".equals(status) || "CANCELLED".equals(status)) setDriverAvailability(true);
+                    toast("تم تحديث حالة الطلب");
+                })
                 .addOnFailureListener(err -> toast("تعذر تحديث الطلب: " + err.getLocalizedMessage()));
     }
 
@@ -430,6 +499,56 @@ public class MainActivity extends AppCompatActivity {
                 .set(customer, SetOptions.merge())
                 .addOnSuccessListener(v -> toast("تم حفظ العميل بنجاح"))
                 .addOnFailureListener(err -> toast("تعذر الحفظ: " + err.getLocalizedMessage()));
+    }
+
+    private void createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    ORDER_CHANNEL_ID,
+                    "الطلبات الجديدة",
+                    NotificationManager.IMPORTANCE_HIGH);
+            channel.setDescription("تنبيهات وصول طلبات توصيل جديدة");
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            if (manager != null) manager.createNotificationChannel(channel);
+        }
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2026);
+        }
+    }
+
+    private void notifyNewOrder(DocumentSnapshot order) {
+        String customer = text(order.getString("customerName"));
+        String phone = text(order.getString("customerPhone"));
+        Double amount = order.getDouble("amount");
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, ORDER_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("طلب توصيل جديد")
+                .setContentText(customer + " — " + phone + " — " + money(amount) + " ر.س")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true);
+        try {
+            if (Build.VERSION.SDK_INT < 33
+                    || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                    == PackageManager.PERMISSION_GRANTED) {
+                NotificationManagerCompat.from(this).notify(order.getId().hashCode(), builder.build());
+            }
+        } catch (SecurityException ignored) {
+        }
+    }
+
+    private void setDriverAvailability(boolean available) {
+        if (auth.getCurrentUser() == null) return;
+        Map<String, Object> driver = new HashMap<>();
+        driver.put("available", available);
+        driver.put("lastSeenAt", FieldValue.serverTimestamp());
+        driver.put("role", "driver");
+        db.collection("users").document(auth.getCurrentUser().getUid())
+                .set(driver, SetOptions.merge());
     }
 
     private void requestLocation() {
